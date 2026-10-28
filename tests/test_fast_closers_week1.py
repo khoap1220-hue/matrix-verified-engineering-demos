@@ -10,8 +10,10 @@ from pilot_fast_closers_week1 import (
     ElectronCryptoWalletGuard,
     LevelSet,
     OpeningRangeBreakoutReversalEngine,
+    SatelliteMultiOrderCollisionGuard,
     ShipStationCryptoEngine,
     SmsMessageJob,
+    TurnkeyHeavyOrderDeliverablePackager,
     TwilioMassCampaignEngine,
     USAddress,
 )
@@ -142,4 +144,89 @@ def test_android_dex_jni_play_integrity_auditor_detects_arm64_svc_and_splits_vis
     assert "NATIVE_JNI_ANTI_TAMPER" in layers
     assert "KEYSTORE_ATTESTATION" in layers
     assert "PLAY_INTEGRITY_VERDICT" in layers
+
+
+def test_satellite_multi_order_collision_guard_freezes_new_bids_and_auto_withdraws_on_escrow():
+    current_13_orders = [
+        {"order_id": "ST-MULTIHOPPER", "tier": "TIER_0_PRECOMPLETED_BOUNTY", "post_award_hours": 0.0, "escrow_funded": False},
+        {"order_id": "ST-INSIDE-BLOCK", "tier": "TIER_0_PRECOMPLETED_BOUNTY", "post_award_hours": 0.0, "escrow_funded": False},
+        {"order_id": "FL-40790593", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 1.0, "escrow_funded": False},
+        {"order_id": "FL-40789906", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 0.5, "escrow_funded": False},
+        {"order_id": "FL-40789694", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 2.0, "escrow_funded": False},
+        {"order_id": "LX-99173", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 1.5, "escrow_funded": False},
+        {"order_id": "LX-98738", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 2.0, "escrow_funded": False},
+        {"order_id": "LX-101582", "tier": "TIER_1_DROP_IN_AUTOMATED", "post_award_hours": 2.0, "escrow_funded": False},
+        {"order_id": "LX-99346", "tier": "TIER_2_HEAVY_CUSTOM_INTEGRATION", "post_award_hours": 14.0, "escrow_funded": False},
+        {"order_id": "LX-102286", "tier": "TIER_2_HEAVY_CUSTOM_INTEGRATION", "post_award_hours": 12.0, "escrow_funded": False},
+        {"order_id": "LX-105141", "tier": "TIER_2_HEAVY_CUSTOM_INTEGRATION", "post_award_hours": 16.0, "escrow_funded": False},
+        {"order_id": "LX-105189", "tier": "TIER_2_HEAVY_CUSTOM_INTEGRATION", "post_award_hours": 8.0, "escrow_funded": False},
+        {"order_id": "LX-98546", "tier": "TIER_2_HEAVY_CUSTOM_INTEGRATION", "post_award_hours": 6.0, "escrow_funded": False},
+    ]
+
+    # 1. With 11 pending freelance bids (6 Tier-1 + 5 Tier-2), new bids MUST be frozen immediately
+    audit = SatelliteMultiOrderCollisionGuard.audit_portfolio_collision_risk(current_13_orders)
+    assert audit["total_orders"] == 13
+    assert audit["tier_0_count"] == 2
+    assert audit["tier_1_fast_count"] == 6
+    assert audit["tier_2_heavy_count"] == 5
+    assert audit["allow_new_freelance_bids"] is False
+    assert audit["operational_directive"] == "FREEZE_NEW_BIDS_AND_PREBUILD_DROP_IN_PACKAGES"
+
+    # 2. The moment 1 heavy order (e.g. LX-105141) locks Escrow, the remaining 4 unfunded heavy offers are flagged for immediate withdrawal
+    current_13_orders[10]["escrow_funded"] = True  # LX-105141 funded
+    audit_after_award = SatelliteMultiOrderCollisionGuard.audit_portfolio_collision_risk(current_13_orders)
+    assert audit_after_award["withdraw_unfunded_heavy_offers"] is True
+    assert "LX-99346" in audit_after_award["offers_to_withdraw_on_award"]
+    assert "LX-102286" in audit_after_award["offers_to_withdraw_on_award"]
+    assert "LX-105141" not in audit_after_award["offers_to_withdraw_on_award"]
+    assert audit_after_award["operational_directive"] == "EXECUTE_FUNDED_ESCROW_ONLY_AND_WITHDRAW_HEAVY_QUEUE"
+
+
+def test_option_a_turnkey_heavy_order_deliverable_packager_reduces_integration_to_under_2_hours():
+    # 1. LX-105141 ($500) Turnkey Android Forensic Dossier
+    d1 = TurnkeyHeavyOrderDeliverablePackager.build_lx_105141_turnkey_dossier(
+        elf_code_bytes=b"\x01\x00\x00\xd4",
+        jni_registered_methods=[{"name": "nativeVerify", "signature": "()Z", "dynamic": True}],
+        keystore_root_of_trust={"deviceLocked": True, "verifiedBootState": "VERIFIED", "attestationSecurityLevel": "StrongBox"},
+        play_integrity_client_signals={"nonce_mode": "SHA256_PAYLOAD_BOUND"},
+    )
+    assert d1["drop_in_ready"] is True
+    assert d1["post_award_hours_remaining"] <= 2.0
+    assert "LX-105141" in d1["markdown_report"]
+
+    # 2. LX-99346 ($550) Turnkey Crypto Shipping Package
+    engine = ShipStationCryptoEngine()
+    email, phone = engine.generate_random_contact(seed=11)
+    sender = USAddress("Matrix Labs", "100 Main St", "Austin", "TX", "78701", "US", email, phone)
+    recipient = USAddress("Client Ops", "200 Market St", "San Francisco", "CA", "94105", "US", email, phone)
+    d2 = TurnkeyHeavyOrderDeliverablePackager.build_lx_99346_turnkey_shipping_package(
+        engine=engine,
+        user_id="user_opt_a",
+        order_id="ORD_OPT_A_1",
+        sender=sender,
+        recipient=recipient,
+        tx_hash="NP_TX_OPT_A",
+        paid_usdc=Decimal("25.00"),
+        label_cost_usdc=Decimal("10.00"),
+    )
+    assert d2["drop_in_ready"] is True
+    assert d2["post_award_hours_remaining"] <= 2.0
+    assert d2["primary_label"]["success"] is True
+    assert d2["cloned_label"]["recipient"].zip_code == "94105"
+
+    # 3. LX-102286 ($450) Turnkey Electron Crypto Wallet Package
+    d3 = TurnkeyHeavyOrderDeliverablePackager.build_lx_102286_turnkey_wallet_package(
+        raw_balance_wei=123_456_789_123_456_789_123,
+        decimals=18,
+        display_decimals=4,
+        expected_out_units=1_000_000,
+        min_acceptable_out_units=990_000,
+        max_slippage_bps=100,
+    )
+    assert d3["drop_in_ready"] is True
+    assert d3["post_award_hours_remaining"] <= 2.0
+    assert d3["formatted_balance"] == "123.4568"
+    assert d3["swap_security_audit"]["safe_to_sign"] is True
+
+
 
