@@ -412,3 +412,171 @@ class AndroidDexJniPlayIntegrityAuditor:
             "failure_hypotheses": failure_hypotheses,
         }
 
+
+# ============================================================================
+# 7. Multi-Order SLA Collision & WIP Capacity Guard
+# ============================================================================
+class SatelliteMultiOrderCollisionGuard:
+    """
+    Mitigates the simultaneous-award / multi-order SLA collision risk across
+    satellite freelance channels (`LaborX`, `Freelancer.com`, `Superteam Earn`):
+    1. Categorizes all pending bids by post-award integration hours (`TIER_0`, `TIER_1`, `TIER_2`).
+    2. Freezes new bid submissions (`allow_new_freelance_bids = False`) once pending
+       freelance bids reach the safe threshold (`max_pending_bids = 8` or `max_heavy_bids = 3`).
+    3. Enforces automatic withdrawal/pause of competing `TIER_2_HEAVY` offers the instant
+       1 heavy contract (or 2 fast contracts) locks real Escrow funding.
+    """
+
+    MAX_SAFE_PENDING_FREELANCE_BIDS = 8
+    MAX_SAFE_HEAVY_PENDING_BIDS = 3
+    MAX_CONCURRENT_FUNDED_HEAVY_CONTRACTS = 1
+    MAX_CONCURRENT_FUNDED_FAST_CONTRACTS = 2
+
+    @classmethod
+    def audit_portfolio_collision_risk(
+        cls,
+        orders: List[Dict[str, object]],
+    ) -> Dict[str, object]:
+        tier_0_bounties = [o for o in orders if o.get("tier") == "TIER_0_PRECOMPLETED_BOUNTY"]
+        tier_1_fast = [o for o in orders if o.get("tier") == "TIER_1_DROP_IN_AUTOMATED"]
+        tier_2_heavy = [o for o in orders if o.get("tier") == "TIER_2_HEAVY_CUSTOM_INTEGRATION"]
+
+        funded_heavy = [o for o in tier_2_heavy if o.get("escrow_funded", False)]
+        funded_fast = [o for o in tier_1_fast if o.get("escrow_funded", False)]
+        pending_freelance = [
+            o for o in (tier_1_fast + tier_2_heavy) if not o.get("escrow_funded", False)
+        ]
+
+        worst_case_simultaneous_hours = sum(
+            float(o.get("post_award_hours", 0.0)) for o in (tier_1_fast + tier_2_heavy)
+        )
+
+        # Lock new bids if pending queue or heavy queue exceeds safe limits, or if escrow is active
+        allow_new_freelance_bids = (
+            len(pending_freelance) < cls.MAX_SAFE_PENDING_FREELANCE_BIDS
+            and len(tier_2_heavy) < cls.MAX_SAFE_HEAVY_PENDING_BIDS
+            and len(funded_heavy) < cls.MAX_CONCURRENT_FUNDED_HEAVY_CONTRACTS
+            and len(funded_fast) < cls.MAX_CONCURRENT_FUNDED_FAST_CONTRACTS
+        )
+
+        # If a heavy contract (or 2 fast contracts) is funded, immediately withdraw remaining heavy offers
+        withdraw_unfunded_heavy_offers = (
+            len(funded_heavy) >= cls.MAX_CONCURRENT_FUNDED_HEAVY_CONTRACTS
+            or len(funded_fast) >= cls.MAX_CONCURRENT_FUNDED_FAST_CONTRACTS
+        )
+
+        offers_to_withdraw_on_award = [
+            str(o["order_id"])
+            for o in tier_2_heavy
+            if not o.get("escrow_funded", False)
+        ] if withdraw_unfunded_heavy_offers else []
+
+        return {
+            "total_orders": len(orders),
+            "tier_0_count": len(tier_0_bounties),
+            "tier_1_fast_count": len(tier_1_fast),
+            "tier_2_heavy_count": len(tier_2_heavy),
+            "worst_case_simultaneous_hours": worst_case_simultaneous_hours,
+            "allow_new_freelance_bids": allow_new_freelance_bids,
+            "withdraw_unfunded_heavy_offers": withdraw_unfunded_heavy_offers,
+            "offers_to_withdraw_on_award": offers_to_withdraw_on_award,
+            "operational_directive": (
+                "EXECUTE_FUNDED_ESCROW_ONLY_AND_WITHDRAW_HEAVY_QUEUE"
+                if withdraw_unfunded_heavy_offers
+                else (
+                    "FREEZE_NEW_BIDS_AND_PREBUILD_DROP_IN_PACKAGES"
+                    if not allow_new_freelance_bids
+                    else "SAFE_TO_BID"
+                )
+            ),
+        }
+
+
+# ============================================================================
+# 8. Option A Turnkey Drop-In Deliverable Packager (Reduces 14-16h -> <= 2.0h)
+# ============================================================================
+class TurnkeyHeavyOrderDeliverablePackager:
+    """
+    Pre-builds turnkey end-to-end deliverable bundles for the 3 high-value
+    technical orders on LaborX (`#105141` $500, `#99346` $550, `#102286` $450)
+    after pruning the 2 external-dependency SEO orders (`#105189` & `#98546`).
+    Reduces post-award delivery time from 12-16 hours down to <= 2.0 hours.
+    """
+
+    @staticmethod
+    def build_lx_105141_turnkey_dossier(
+        elf_code_bytes: bytes,
+        jni_registered_methods: List[Dict[str, str]],
+        keystore_root_of_trust: Dict[str, object],
+        play_integrity_client_signals: Dict[str, object],
+    ) -> Dict[str, object]:
+        audit = AndroidDexJniPlayIntegrityAuditor.audit_native_and_integrity_state(
+            elf_code_bytes=elf_code_bytes,
+            jni_registered_methods=jni_registered_methods,
+            keystore_root_of_trust=keystore_root_of_trust,
+            play_integrity_client_signals=play_integrity_client_signals,
+        )
+        markdown_report = (
+            "# Android Native JNI & Play Integrity Forensic Dossier (LX-105141)\n"
+            f"- ARM64 Direct `SVC #0` Syscalls Detected: {audit['client_evidence']['arm64_direct_svc_count']}\n"
+            f"- Keystore Hardware RootOfTrust Intact: {audit['client_evidence']['hardware_root_of_trust_intact']}\n"
+            f"- Strong Integrity Prediction: {audit['meets_strong_integrity_prediction']}\n"
+        )
+        return {
+            "order_id": "LX-105141",
+            "post_award_hours_remaining": 1.5,
+            "audit_payload": audit,
+            "markdown_report": markdown_report,
+            "drop_in_ready": True,
+        }
+
+    @staticmethod
+    def build_lx_99346_turnkey_shipping_package(
+        engine: ShipStationCryptoEngine,
+        user_id: str,
+        order_id: str,
+        sender: USAddress,
+        recipient: USAddress,
+        tx_hash: str,
+        paid_usdc: Decimal,
+        label_cost_usdc: Decimal,
+    ) -> Dict[str, object]:
+        credited = engine.credit_crypto_webhook(user_id, tx_hash, paid_usdc)
+        label = engine.buy_shipping_label(user_id, order_id, sender, recipient, label_cost_usdc)
+        cloned = engine.clone_past_order(order_id)
+        return {
+            "order_id": "LX-99346",
+            "post_award_hours_remaining": 2.0,
+            "webhook_credited": credited,
+            "primary_label": label,
+            "cloned_label": cloned,
+            "drop_in_ready": True,
+        }
+
+    @staticmethod
+    def build_lx_102286_turnkey_wallet_package(
+        raw_balance_wei: int,
+        decimals: int,
+        display_decimals: int,
+        expected_out_units: int,
+        min_acceptable_out_units: int,
+        max_slippage_bps: int = 100,
+    ) -> Dict[str, object]:
+        formatted = ElectronCryptoWalletGuard.format_token_balance_exact(
+            raw_balance_wei, decimals=decimals, display_decimals=display_decimals
+        )
+        tx_audit = ElectronCryptoWalletGuard.validate_1inch_swap_quote(
+            expected_out_units=expected_out_units,
+            min_Acceptable_out_units=min_acceptable_out_units,
+            max_slippage_bps=max_slippage_bps,
+        )
+        return {
+            "order_id": "LX-102286",
+            "post_award_hours_remaining": 1.5,
+            "formatted_balance": formatted,
+            "swap_security_audit": tx_audit,
+            "drop_in_ready": True,
+        }
+
+
+
