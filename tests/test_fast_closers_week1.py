@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts" / "pilots"))
 
 from pilot_fast_closers_week1 import (
+    AndroidDexJniPlayIntegrityAuditor,
     DatasheetLangGraphOptimizer,
     ElectronCryptoWalletGuard,
     LevelSet,
@@ -109,3 +110,36 @@ def test_fl_40791362_50_page_datasheet_langgraph_router():
     assert res["parameter_page_map"]["Supply Voltage"] == [14]
     assert res["parameter_page_map"]["Operating Temperature"] == [37]
     assert res["token_savings_pct"] > 90.0
+
+
+def test_android_dex_jni_play_integrity_auditor_detects_arm64_svc_and_splits_visibility():
+    # Simulated ARM64 prologue + MOV X8, #56 (openat) + SVC #0 (0x01, 0x00, 0x00, 0xd4) + RET
+    elf_bytes = b"\xe0\x03\x1f\xaa" + b"\x08\x07\x80\xd2" + b"\x01\x00\x00\xd4" + b"\xc0\x03\x5f\xd6"
+    jni_methods = [
+        {"name": "nativeCheckEnvironment", "signature": "(Landroid/content/Context;)I", "dynamic": True}
+    ]
+    root_of_trust = {
+        "deviceLocked": False,
+        "verifiedBootState": "ORANGE",
+        "attestationSecurityLevel": "TrustedEnvironment",
+    }
+    client_signals = {
+        "nonce_mode": "SHA256_PAYLOAD_BOUND",
+        "nonce_replay_suspected": True,
+    }
+
+    report = AndroidDexJniPlayIntegrityAuditor.audit_native_and_integrity_state(
+        elf_code_bytes=elf_bytes,
+        jni_registered_methods=jni_methods,
+        keystore_root_of_trust=root_of_trust,
+        play_integrity_client_signals=client_signals,
+    )
+    assert report["client_evidence"]["arm64_direct_svc_count"] == 1
+    assert report["client_evidence"]["arm64_svc_offsets"] == [8]
+    assert report["client_evidence"]["hardware_root_of_trust_intact"] is False
+    assert report["meets_strong_integrity_prediction"] is False
+    layers = [h["layer"] for h in report["failure_hypotheses"]]
+    assert "NATIVE_JNI_ANTI_TAMPER" in layers
+    assert "KEYSTORE_ATTESTATION" in layers
+    assert "PLAY_INTEGRITY_VERDICT" in layers
+
